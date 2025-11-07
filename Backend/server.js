@@ -9,6 +9,8 @@ require('dotenv').config();
 const invoiceRoutes = require('./routes/invoiceRoutes');
 const anomalyRoutes = require('./routes/anomalyRoutes');
 const chatRoutes = require('./routes/chatRoutes');
+const emailRoutes = require('./emailRoutes');
+const scheduledReports = require('./scheduledReports');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -33,6 +35,7 @@ mongoose.connect('mongodb://localhost:27017/fintel-ai', {
 app.use('/api/invoices', invoiceRoutes);
 app.use('/api/anomalies', anomalyRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/email', emailRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -64,7 +67,11 @@ app.listen(PORT, () => {
   🔍 OCR Engine: Ready
   🧠 AI Engine: Active
   💾 Database: MongoDB Connected
+  📧 Email Service: Active
   `);
+  
+  // Initialize scheduled email reports
+  scheduledReports.initializeScheduledReports();
 });
 
 module.exports = app;

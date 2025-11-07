@@ -149,6 +149,15 @@ async def get_dashboard_stats():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@app.get("/api/dashboard/anomaly-trends")
+async def get_anomaly_trends(days: int = 30):
+    """Get anomaly trends for the last N days"""
+    try:
+        trends = db.get_anomaly_trends(days=days)
+        return {"success": True, "trends": trends}
+    except Exception as e:
+        return {"success": False, "error": str(e), "trends": []}
+
 # Pydantic model for chat request
 class ChatRequest(BaseModel):
     message: str

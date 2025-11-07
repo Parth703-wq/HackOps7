@@ -9,7 +9,7 @@ import re
 
 class GSTVerifier:
     def __init__(self):
-        self.api_key = "74a674e197msh302bfc0624c615ap13e7fejsnfa8d2224e24f"
+        self.api_key = "7bc4a1b959msh1e1dc9c6075cdc8p1ff4e0jsn178b4d51fccd"
         self.api_host = "gst-insights-api1.p.rapidapi.com"
         self.base_url = f"https://{self.api_host}/gstin"
     

@@ -57,6 +57,8 @@ class FintelDatabase:
             'allGstNumbers': invoice_data.get('gst_numbers', []),
             'totalAmount': float(invoice_data.get('total_amount', 0)),
             'invoiceDate': invoice_data.get('invoice_date'),
+            'gstRate': invoice_data.get('gst_rate', 'Unknown'),
+            'hsnNumber': invoice_data.get('hsn_number', 'Unknown'),
             'hsnCodes': invoice_data.get('hsn_sac_codes', []),
             'itemDescriptions': invoice_data.get('item_descriptions', []),
             'quantities': invoice_data.get('quantities', []),
@@ -138,8 +140,19 @@ class FintelDatabase:
                 'relatedInvoiceId': str(duplicate['_id'])
             })
         
-        # 2. Check for GST number with different vendor name
-        gst_number = invoice_data.get('gst_numbers', [])[0] if invoice_data.get('gst_numbers') else None
+        # 2. Check for missing GST number
+        gst_numbers = invoice_data.get('gst_numbers', [])
+        gst_missing = invoice_data.get('gst_missing', False)
+        
+        if not gst_numbers or len(gst_numbers) == 0 or gst_missing:
+            anomalies.append({
+                'type': 'MISSING_GST',
+                'severity': 'HIGH',
+                'description': f"Invoice missing GST number - Vendor: {invoice_data.get('vendor_name', 'Unknown')}",
+            })
+        
+        # 3. Check for GST number with different vendor name
+        gst_number = gst_numbers[0] if gst_numbers else None
         if gst_number:
             different_vendor = self.invoices.find_one({
                 'gstNumber': gst_number,
@@ -154,7 +167,7 @@ class FintelDatabase:
                     'relatedInvoiceId': str(different_vendor['_id'])
                 })
         
-        # 3. Check for unusual amount from same vendor
+        # 4. Check for unusual amount from same vendor
         vendor_name = invoice_data.get('vendor_name')
         if vendor_name and vendor_name != 'Unknown':
             # Get average amount for this vendor
@@ -180,7 +193,7 @@ class FintelDatabase:
                         'description': f"Amount ₹{current_amount} is 3x higher than vendor average ₹{avg_amount:.2f}"
                     })
         
-        # 4. Check for same HSN code with very different price
+        # 5. Check for same HSN code with very different price
         hsn_codes = invoice_data.get('hsn_sac_codes', [])
         if hsn_codes:
             for hsn in hsn_codes[:3]:  # Check first 3 HSN codes
@@ -292,6 +305,85 @@ class FintelDatabase:
             'highSeverityAnomalies': high_severity_anomalies,
             'totalAmountProcessed': total_amount
         }
+    
+    def get_anomaly_trends(self, days: int = 30) -> List[Dict[str, Any]]:
+        """
+        Get anomaly trends for the last N days
+        Returns daily counts of each anomaly type
+        """
+        from datetime import timedelta
+        
+        # Calculate date range
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+        
+        # Aggregate anomalies by date and type
+        pipeline = [
+            {
+                '$match': {
+                    'detectedAt': {'$gte': start_date, '$lte': end_date}
+                }
+            },
+            {
+                '$group': {
+                    '_id': {
+                        'date': {'$dateToString': {'format': '%Y-%m-%d', 'date': '$detectedAt'}},
+                        'type': '$anomalyType'
+                    },
+                    'count': {'$sum': 1}
+                }
+            },
+            {
+                '$sort': {'_id.date': 1}
+            }
+        ]
+        
+        results = list(self.anomalies.aggregate(pipeline))
+        
+        # Organize data by date
+        trends_by_date = {}
+        for result in results:
+            date = result['_id']['date']
+            anomaly_type = result['_id']['type']
+            count = result['count']
+            
+            if date not in trends_by_date:
+                trends_by_date[date] = {
+                    'date': date,
+                    'duplicates': 0,
+                    'gstMismatches': 0,
+                    'missingGst': 0,
+                    'total': 0
+                }
+            
+            # Map anomaly types to keys
+            if anomaly_type == 'DUPLICATE_INVOICE':
+                trends_by_date[date]['duplicates'] = count
+            elif anomaly_type == 'GST_VENDOR_MISMATCH':
+                trends_by_date[date]['gstMismatches'] = count
+            elif anomaly_type == 'MISSING_GST':
+                trends_by_date[date]['missingGst'] = count
+            
+            trends_by_date[date]['total'] += count
+        
+        # Fill in missing dates with zeros
+        all_trends = []
+        current_date = start_date
+        while current_date <= end_date:
+            date_str = current_date.strftime('%Y-%m-%d')
+            if date_str in trends_by_date:
+                all_trends.append(trends_by_date[date_str])
+            else:
+                all_trends.append({
+                    'date': date_str,
+                    'duplicates': 0,
+                    'gstMismatches': 0,
+                    'missingGst': 0,
+                    'total': 0
+                })
+            current_date += timedelta(days=1)
+        
+        return all_trends
     
     def close(self):
         """Close database connection"""
