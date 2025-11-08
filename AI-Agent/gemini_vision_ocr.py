@@ -19,26 +19,38 @@ class GeminiVisionOCR:
         self.model = genai.GenerativeModel('gemini-2.5-flash')
         print("✅ Gemini Vision OCR initialized!")
     
-    def convert_pdf_to_image(self, pdf_path):
-        """Convert PDF first page to high-quality image"""
+    def convert_pdf_to_images(self, pdf_path):
+        """Convert ALL PDF pages to high-quality images"""
         try:
             doc = fitz.open(str(pdf_path))
-            page = doc.load_page(0)  # First page
+            images = []
             
-            # High resolution for better OCR
-            mat = fitz.Matrix(3.0, 3.0)  # 300 DPI
-            pix = page.get_pixmap(matrix=mat, alpha=False)
+            print(f"📄 PDF has {len(doc)} pages")
             
-            # Convert to PIL Image
-            img_data = pix.tobytes("png")
-            image = Image.open(io.BytesIO(img_data))
+            for page_num in range(len(doc)):
+                page = doc.load_page(page_num)
+                
+                # High resolution for better OCR
+                mat = fitz.Matrix(3.0, 3.0)  # 300 DPI
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                
+                # Convert to PIL Image
+                img_data = pix.tobytes("png")
+                image = Image.open(io.BytesIO(img_data))
+                images.append(image)
+                
+                print(f"✅ Converted page {page_num + 1}/{len(doc)}: {image.size}")
             
             doc.close()
-            print(f"✅ Converted PDF to image: {image.size}")
-            return image
+            return images
         except Exception as e:
             print(f"❌ PDF conversion error: {e}")
             return None
+    
+    def convert_pdf_to_image(self, pdf_path):
+        """Convert PDF first page to high-quality image (backward compatibility)"""
+        images = self.convert_pdf_to_images(pdf_path)
+        return images[0] if images else None
     
     def create_extraction_prompt(self):
         """Create detailed prompt for Gemini to extract invoice data"""
@@ -68,8 +80,18 @@ class GeminiVisionOCR:
 3. **Invoice Date**: The date of invoice (look for: Date, Invoice Date, Bill Date, etc.)
 4. **Total Amount**: The final total amount payable (look for: Total, Grand Total, Amount Payable, Net Amount)
 5. **GST Numbers**: ONLY the VENDOR/SELLER GST number (from vendor details section, NOT from buyer/customer section)
-6. **GST Rate**: The GST percentage applied (look for: CGST %, SGST %, IGST %, GST Rate - e.g., 18%, 12%, 5%, 28%)
-7. **HSN Number**: The primary HSN/SAC code (4-8 digit code, look for: HSN, SAC, HSN Code, SAC Code)
+6. **GST Rate**: The TOTAL GST percentage applied
+   - If CGST and SGST are separate, ADD them together (e.g., CGST 9% + SGST 9% = 18% total GST)
+   - If IGST is given, use that directly
+   - If only one GST rate is shown, use that
+   - Examples: 
+     * CGST 9% + SGST 9% → return "18%"
+     * CGST 6% + SGST 6% → return "12%"
+     * IGST 18% → return "18%"
+7. **CGST Rate**: The CGST percentage if shown separately (e.g., 9%, 6%, 2.5%)
+8. **SGST Rate**: The SGST percentage if shown separately (e.g., 9%, 6%, 2.5%)
+9. **IGST Rate**: The IGST percentage if shown (e.g., 18%, 12%, 5%)
+10. **HSN Number**: The primary HSN/SAC code (4-8 digit code, look for: HSN, SAC, HSN Code, SAC Code)
 8. **Vendor Address**: Complete address of the vendor
 9. **Line Items**: Extract all items/services with:
    - Item description
@@ -87,7 +109,10 @@ Return ONLY a valid JSON object with this EXACT structure (no markdown, no code 
   "invoice_date": "DD-MM-YYYY or Unknown",
   "total_amount": 0.0,
   "gst_numbers": ["list of all GST numbers found"],
-  "gst_rate": "GST percentage (e.g., 18%, 12%, 5%) or Unknown",
+  "gst_rate": "TOTAL GST percentage (CGST+SGST or IGST) e.g., 18%, 12%, 5% or Unknown",
+  "cgst_rate": "CGST percentage if separate (e.g., 9%, 6%) or Unknown",
+  "sgst_rate": "SGST percentage if separate (e.g., 9%, 6%) or Unknown",
+  "igst_rate": "IGST percentage if applicable (e.g., 18%, 12%) or Unknown",
   "hsn_number": "primary HSN/SAC code or Unknown",
   "vendor_address": "complete address or Unknown",
   "line_items": [
@@ -157,30 +182,46 @@ Return ONLY a valid JSON object with this EXACT structure (no markdown, no code 
     
     def process_invoice(self, file_path):
         """
-        Main processing function
+        Main processing function - handles multi-page PDFs
         Returns structured invoice data
         """
         print(f"\n{'='*60}")
         print(f"🔍 Processing Invoice: {Path(file_path).name}")
         print(f"{'='*60}")
         
-        # Convert PDF to image
-        image = self.convert_pdf_to_image(file_path)
+        # Convert ALL PDF pages to images
+        images = self.convert_pdf_to_images(file_path)
         
-        if not image:
+        if not images:
             return {
                 'success': False,
-                'error': 'Failed to convert PDF to image'
+                'error': 'Failed to convert PDF to images'
             }
         
-        # Extract data using Gemini Vision
-        extracted_data = self.extract_invoice_data(image)
+        # Process all pages
+        all_extracted_data = []
+        for page_num, image in enumerate(images, 1):
+            print(f"\n📄 Processing page {page_num}/{len(images)}...")
+            extracted_data = self.extract_invoice_data(image)
+            if extracted_data:
+                all_extracted_data.append(extracted_data)
         
-        if not extracted_data:
+        if not all_extracted_data:
             return {
                 'success': False,
                 'error': 'Failed to extract data from invoice'
             }
+        
+        # Merge data from all pages (first page has main info, other pages may have line items)
+        extracted_data = all_extracted_data[0]  # Main data from first page
+        
+        # Merge line items from all pages
+        all_line_items = []
+        for page_data in all_extracted_data:
+            all_line_items.extend(page_data.get('line_items', []))
+        extracted_data['line_items'] = all_line_items
+        
+        print(f"\n✅ Processed {len(images)} pages, found {len(all_line_items)} total line items")
         
         # Validate and clean GST numbers (MUST be exactly 15 characters)
         raw_gst_numbers = extracted_data.get('gst_numbers', [])
@@ -194,6 +235,23 @@ Return ONLY a valid JSON object with this EXACT structure (no markdown, no code 
             else:
                 print(f"❌ Invalid GST: {gst} ({len(cleaned_gst)} chars) - REJECTED")
         
+        # Calculate total GST rate from CGST+SGST if needed
+        gst_rate = extracted_data.get('gst_rate', 'Unknown')
+        cgst_rate = extracted_data.get('cgst_rate', 'Unknown')
+        sgst_rate = extracted_data.get('sgst_rate', 'Unknown')
+        igst_rate = extracted_data.get('igst_rate', 'Unknown')
+        
+        # If gst_rate is Unknown but CGST and SGST are available, calculate it
+        if gst_rate == 'Unknown' and cgst_rate != 'Unknown' and sgst_rate != 'Unknown':
+            try:
+                cgst_val = float(cgst_rate.replace('%', '').strip())
+                sgst_val = float(sgst_rate.replace('%', '').strip())
+                total_gst = cgst_val + sgst_val
+                gst_rate = f"{total_gst}%"
+                print(f"✅ Calculated GST Rate: CGST {cgst_val}% + SGST {sgst_val}% = {total_gst}%")
+            except:
+                pass
+        
         # Structure the response
         structured_data = {
             'invoice_number': extracted_data.get('invoice_number', 'Unknown'),
@@ -201,7 +259,10 @@ Return ONLY a valid JSON object with this EXACT structure (no markdown, no code 
             'invoice_date': extracted_data.get('invoice_date', 'Unknown'),
             'total_amount': float(extracted_data.get('total_amount', 0)),
             'gst_numbers': valid_gst_numbers,  # Only valid 15-char GST numbers
-            'gst_rate': extracted_data.get('gst_rate', 'Unknown'),  # GST percentage
+            'gst_rate': gst_rate,  # Total GST percentage (CGST+SGST or IGST)
+            'cgst_rate': cgst_rate,  # CGST percentage
+            'sgst_rate': sgst_rate,  # SGST percentage
+            'igst_rate': igst_rate,  # IGST percentage
             'hsn_number': extracted_data.get('hsn_number', 'Unknown'),  # Primary HSN number
             'vendor_address': extracted_data.get('vendor_address', 'Unknown'),
             'hsn_codes': extracted_data.get('hsn_codes', []),

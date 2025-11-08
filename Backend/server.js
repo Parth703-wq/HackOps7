@@ -11,6 +11,7 @@ const anomalyRoutes = require('./routes/anomalyRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const emailRoutes = require('./emailRoutes');
 const scheduledReports = require('./scheduledReports');
+const { router: authRoutes } = require('./authRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -32,6 +33,7 @@ mongoose.connect('mongodb://localhost:27017/fintel-ai', {
 .catch(err => console.error('❌ MongoDB connection error:', err));
 
 // Routes
+app.use('/api/auth', authRoutes);
 app.use('/api/invoices', invoiceRoutes);
 app.use('/api/anomalies', anomalyRoutes);
 app.use('/api/chat', chatRoutes);

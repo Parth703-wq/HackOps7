@@ -28,6 +28,15 @@ from ml_trainer import FintelMLTrainer
 from database import FintelDatabase
 from gst_verifier import gst_verifier
 
+# NEW: Import LangChain integration (optional)
+try:
+    from integrate_langchain import analyze_invoice_hybrid
+    LANGCHAIN_AVAILABLE = True
+    print("✅ LangChain integration available")
+except ImportError:
+    LANGCHAIN_AVAILABLE = False
+    print("⚠️  LangChain not available (optional feature)")
+
 # Initialize FastAPI
 app = FastAPI(
     title="FINTEL AI - Complete Compliance API", 
@@ -310,17 +319,41 @@ async def upload_invoice_complete(file: UploadFile = File(...)):
         invoice_storage_data = {
             **invoice_data,
             'gst_rate': ocr_result['structured_data'].get('gst_rate', 'Unknown'),
+            'cgst_rate': ocr_result['structured_data'].get('cgst_rate', 'Unknown'),
+            'sgst_rate': ocr_result['structured_data'].get('sgst_rate', 'Unknown'),
+            'igst_rate': ocr_result['structured_data'].get('igst_rate', 'Unknown'),
             'hsn_number': ocr_result['structured_data'].get('hsn_number', 'Unknown'),
             'hsn_sac_codes': enhanced_data.get('hsn_sac_codes', []),
             'item_descriptions': enhanced_data.get('item_descriptions', []),
             'quantities': enhanced_data.get('quantities', []),
             'compliance_results': compliance_results,
-            'ml_prediction': ml_result
+            'ml_prediction': ml_result,
+            'gst_verification': gst_verification_results,
+            'gst_missing': gst_missing
         }
         invoice_id = db.store_invoice(invoice_storage_data)
         
         # Detect anomalies by comparing with historical data
         db_anomalies = db.detect_anomalies(invoice_storage_data, invoice_id)
+        
+        # NEW: AI-Powered Analysis with LangChain
+        ai_analysis_result = None
+        if LANGCHAIN_AVAILABLE:
+            try:
+                print("🤖 Running AI Agent Analysis...")
+                ai_analysis_result = analyze_invoice_hybrid(
+                    invoice_data={
+                        "invoice_number": invoice_data.get('invoice_number'),
+                        "vendor_name": invoice_data.get('vendor_name'),
+                        "total_amount": invoice_data.get('total_amount', 0),
+                        "gst_numbers": invoice_data.get('gst_numbers', [])
+                    },
+                    use_ai=True
+                )
+                print(f"✅ AI Analysis Complete: {ai_analysis_result.get('ai_used')}")
+            except Exception as e:
+                print(f"⚠️  AI Analysis failed: {e}")
+                ai_analysis_result = {"ai_used": False, "error": str(e)}
         
         # Format response
         response = {
@@ -371,7 +404,16 @@ async def upload_invoice_complete(file: UploadFile = File(...)):
                 "databaseAnomalies": db_anomalies,
                 "invoiceId": invoice_id,
                 
-                "processingMethod": "fintel_ai_complete_v2_with_db"
+                # NEW: AI Analysis Results
+                "aiAnalysis": {
+                    "enabled": LANGCHAIN_AVAILABLE,
+                    "used": ai_analysis_result.get("ai_used") if ai_analysis_result else False,
+                    "analysis": ai_analysis_result.get("ai_analysis") if ai_analysis_result else None,
+                    "confidence": ai_analysis_result.get("ai_confidence") if ai_analysis_result else None,
+                    "ruleBasedAnomalies": ai_analysis_result.get("rule_based_anomalies") if ai_analysis_result else None
+                },
+                
+                "processingMethod": "fintel_ai_complete_v2_with_langchain"
             }
         }
         
@@ -669,6 +711,49 @@ def safe_convert(value):
     if value is None:
         return "Unknown"
     return str(value)
+
+# NEW: AI-Powered Analysis Endpoint
+@app.get("/api/invoices/{invoice_id}/ai-analysis")
+async def get_ai_analysis(invoice_id: str):
+    """
+    Get AI-powered analysis for an existing invoice
+    Uses LangChain agent for intelligent fraud detection
+    """
+    if not LANGCHAIN_AVAILABLE:
+        return {
+            "success": False,
+            "error": "LangChain not installed. Run: pip install langchain langchain-google-genai"
+        }
+    
+    try:
+        # Get invoice from database
+        invoice = db.invoices.find_one({"_id": invoice_id})
+        
+        if not invoice:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        
+        # Run AI analysis
+        ai_result = analyze_invoice_hybrid(
+            invoice_data={
+                "invoice_number": invoice.get("invoiceNumber"),
+                "vendor_name": invoice.get("vendorName"),
+                "total_amount": invoice.get("totalAmount", 0),
+                "gst_numbers": invoice.get("gstNumbers", [])
+            },
+            use_ai=True
+        )
+        
+        return {
+            "success": True,
+            "invoice_id": invoice_id,
+            "rule_based_anomalies": ai_result["rule_based_anomalies"],
+            "ai_analysis": ai_result.get("ai_analysis"),
+            "ai_confidence": ai_result.get("ai_confidence"),
+            "ai_used": ai_result["ai_used"]
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     print("Starting FINTEL AI Complete API Server...")

@@ -140,7 +140,7 @@ class FintelDatabase:
                 'relatedInvoiceId': str(duplicate['_id'])
             })
         
-        # 2. Check for missing GST number
+        # 2. Check for missing GST number (No GST found in invoice)
         gst_numbers = invoice_data.get('gst_numbers', [])
         gst_missing = invoice_data.get('gst_missing', False)
         
@@ -148,11 +148,24 @@ class FintelDatabase:
             anomalies.append({
                 'type': 'MISSING_GST',
                 'severity': 'HIGH',
-                'description': f"Invoice missing GST number - Vendor: {invoice_data.get('vendor_name', 'Unknown')}",
+                'description': f"No GST number found in invoice - Vendor: {invoice_data.get('vendor_name', 'Unknown')}",
             })
         
-        # 3. Check for GST number with different vendor name
+        # 3. Check for invalid GST number (GST found but invalid format/verification failed)
         gst_number = gst_numbers[0] if gst_numbers else None
+        if gst_number:
+            # Check if GST verification failed
+            gst_verification = invoice_data.get('gst_verification', [])
+            if gst_verification and len(gst_verification) > 0:
+                verification_result = gst_verification[0]
+                if not verification_result.get('success') or not verification_result.get('is_active'):
+                    anomalies.append({
+                        'type': 'INVALID_GST',
+                        'severity': 'HIGH',
+                        'description': f"Invalid GST number: {gst_number} - Verification failed",
+                    })
+        
+        # 4. Check for GST number with different vendor name
         if gst_number:
             different_vendor = self.invoices.find_one({
                 'gstNumber': gst_number,
@@ -351,7 +364,7 @@ class FintelDatabase:
                 trends_by_date[date] = {
                     'date': date,
                     'duplicates': 0,
-                    'gstMismatches': 0,
+                    'invalidGst': 0,
                     'missingGst': 0,
                     'total': 0
                 }
@@ -359,8 +372,8 @@ class FintelDatabase:
             # Map anomaly types to keys
             if anomaly_type == 'DUPLICATE_INVOICE':
                 trends_by_date[date]['duplicates'] = count
-            elif anomaly_type == 'GST_VENDOR_MISMATCH':
-                trends_by_date[date]['gstMismatches'] = count
+            elif anomaly_type == 'INVALID_GST':
+                trends_by_date[date]['invalidGst'] = count
             elif anomaly_type == 'MISSING_GST':
                 trends_by_date[date]['missingGst'] = count
             
@@ -377,7 +390,7 @@ class FintelDatabase:
                 all_trends.append({
                     'date': date_str,
                     'duplicates': 0,
-                    'gstMismatches': 0,
+                    'invalidGst': 0,
                     'missingGst': 0,
                     'total': 0
                 })
